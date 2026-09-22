@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>User App (Secured)</title>
+    <style>
+        body { font-family: system-ui, -apple-system, sans-serif; max-width: 500px; margin: 40px auto; padding: 20px; background: #f0f2f5; color: #1a1a1a;}
+        .card { background: white; padding: 24px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); margin-bottom: 20px; }
+        h2 { margin-top: 0; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+        label { display: block; font-size: 0.9rem; font-weight: 600; margin-top: 15px; margin-bottom: 5px; }
+        input, select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; }
+        button { background: #3b82f6; color: white; border: none; padding: 12px; border-radius: 6px; width: 100%; font-size: 1rem; font-weight: 600; cursor: pointer; margin-top: 15px; }
+        button:hover { background: #2563eb; }
+        .balance { font-size: 2.5rem; font-weight: bold; color: #10b981; text-align: center; margin: 10px 0; }
+        .hidden { display: none; }
+        .link { color: #3b82f6; cursor: pointer; text-align: center; display: block; margin-top: 15px; font-size: 0.9rem; }
+    </style>
+</head>
+<body>
+
+    <!-- AUTHENTICATION SECTION -->
+    <div id="authSection" class="card">
+        <h2 id="authTitle">Login</h2>
+        
+        <div id="signupFields" class="hidden">
+            <label>Full Name</label>
+            <input type="text" id="regName" placeholder="e.g. Jatin Arora">
+        </div>
+
+        <label>Email</label>
+        <input type="email" id="email" placeholder="user@example.com">
+
+        <label>Password</label>
+        <input type="password" id="password" placeholder="••••••••">
+
+        <button id="authBtn" onclick="login()">Log In</button>
+        <span class="link" id="toggleAuth" onclick="toggleSignup()">Need an account? Sign up</span>
+    </div>
+
+    <!-- MAIN DASHBOARD -->
+    <div id="dashboardSection" class="card hidden">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <h2 style="margin: 0; border: none;">Welcome, <span id="userName">User</span>!</h2>
+            <button onclick="logout()" style="width: auto; padding: 6px 12px; background: #ef4444; margin-top: 0;">Logout</button>
+        </div>
+        
+        <h3 style="text-align: center; margin-top: 20px;">Current Balance</h3>
+        <div id="balanceDisplay" class="balance">$0.00</div>
+
+        <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+
+        <h3>Request Withdrawal</h3>
+        <label>Amount to Withdraw</label>
+        <input type="number" id="amount" value="50">
+        
+        <label>Transfer Method</label>
+        <select id="method">
+            <option value="UPI">UPI</option>
+            <option value="Bank Transfer">Bank Transfer</option>
+        </select>
+
+        <label>Account ID / UPI ID</label>
+        <input type="text" id="accountId" value="user@upi">
+
+        <button onclick="submitPayout()">Submit Request</button>
+    </div>
+
+    <script>
+        let isSignup = false;
+
+        function toggleSignup() {
+            isSignup = !isSignup;
+            document.getElementById('signupFields').className = isSignup ? '' : 'hidden';
+            document.getElementById('authTitle').innerText = isSignup ? 'Create Account' : 'Login';
+            document.getElementById('authBtn').innerText = isSignup ? 'Sign Up' : 'Log In';
+            document.getElementById('toggleAuth').innerText = isSignup ? 'Already have an account? Log in' : 'Need an account? Sign up';
+            document.getElementById('authBtn').setAttribute('onclick', isSignup ? 'signup()' : 'login()');
+        }
+
+        async function signup() {
+            const name = document.getElementById('regName').value;
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+
+            const res = await fetch('/v1/auth/signup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, email, password })
+            });
+            const data = await res.json();
+            if(data.status === 'success') {
+                alert("Account created! Please log in.");
+                toggleSignup();
+            } else { alert(data.error); }
+        }
+
+        async function login() {
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+
+            const res = await fetch('/v1/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, password })
+            });
+            const data = await res.json();
+            
+            if(data.token) {
+                localStorage.setItem('token', data.token);
+                document.getElementById('userName').innerText = data.user.name;
+                showDashboard();
+            } else { alert(data.error); }
+        }
+
+        async function fetchBalance() {
+            const token = localStorage.getItem('token');
+            const res = await fetch('/v1/user/balance', {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            const data = await res.json();
+            if (data.withdrawableBalance !== undefined) {
+                document.getElementById('balanceDisplay').innerText = `${data.currencySymbol}${data.withdrawableBalance}`;
+            }
+        }
+
+        async function submitPayout() {
+            const amount = parseFloat(document.getElementById('amount').value);
+            const method = document.getElementById('method').value;
+            const accountId = document.getElementById('accountId').value;
+            const token = localStorage.getItem('token');
+
+            const res = await fetch('/v1/user/payout', {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}` 
+                },
+                body: JSON.stringify({ amount, method, accountId })
+            });
+            const data = await res.json();
+            alert(data.message || data.error);
+            if (data.status === 'success') fetchBalance(); 
+        }
+
+        function showDashboard() {
+            document.getElementById('authSection').className = 'card hidden';
+            document.getElementById('dashboardSection').className = 'card';
+            fetchBalance();
+        }
+
+        function logout() {
+            localStorage.removeItem('token');
+            document.getElementById('authSection').className = 'card';
+            document.getElementById('dashboardSection').className = 'card hidden';
+        }
+
+        if(localStorage.getItem('token')) showDashboard();
+    </script>
+</body>
+</html>

@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Panel - View Tracker</title>
+    <style>
+        body { font-family: system-ui, -apple-system, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; background: #0f172a; color: #f8fafc; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #334155; padding-bottom: 15px; margin-bottom: 20px; }
+        .card { background: #1e293b; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; border: 1px solid #334155; }
+        .details h3 { margin: 0 0 5px 0; color: #f8fafc; }
+        .details p { margin: 0; color: #94a3b8; font-size: 0.9rem; }
+        .amount { font-size: 1.5rem; font-weight: bold; color: #10b981; margin-right: 20px; }
+        .actions { display: flex; gap: 10px; }
+        button { border: none; padding: 10px 15px; border-radius: 6px; font-weight: bold; cursor: pointer; transition: 0.2s; color: white;}
+        .btn-approve { background: #10b981; }
+        .btn-approve:hover { background: #059669; }
+        .btn-reject { background: #ef4444; }
+        .btn-reject:hover { background: #dc2626; }
+        .empty { text-align: center; color: #94a3b8; padding: 40px; font-style: italic; }
+
+        /* Login Form Styles */
+        .login-box { background: #1e293b; padding: 30px; border-radius: 12px; border: 1px solid #334155; max-width: 400px; margin: 60px auto; }
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; margin-bottom: 5px; color: #94a3b8; font-size: 0.9rem; }
+        .form-group input { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: white; box-sizing: border-box; }
+        .btn-login { width: 100%; background: #3b82f6; padding: 12px; font-size: 1rem; }
+        .btn-login:hover { background: #2563eb; }
+        .error-msg { color: #ef4444; margin-top: 10px; font-size: 0.9rem; text-align: center; }
+    </style>
+</head>
+<body>
+
+    <!-- LOGIN FORM -->
+    <div id="loginSection" class="login-box">
+        <h2 style="margin-top: 0; text-align: center; color: #f8fafc;">👑 Admin Login</h2>
+        <form id="loginForm" onsubmit="handleLogin(event)">
+            <div class="form-group">
+                <label>Admin Email</label>
+                <input type="email" id="adminEmail" placeholder="jatin@gmail.com" required>
+            </div>
+            <div class="form-group">
+                <label>Admin Password</label>
+                <input type="password" id="adminPassword" placeholder="jatin@123" required>
+            </div>
+            <button type="submit" class="btn-login">Log In to Admin Panel</button>
+            <div id="loginError" class="error-msg"></div>
+        </form>
+    </div>
+
+    <!-- MAIN ADMIN DASHBOARD -->
+    <div id="adminDashboard" style="display: none;">
+        <div class="header">
+            <h2>👑 Admin Panel: Pending Payouts</h2>
+            <div>
+                <button onclick="logoutAdmin()" style="background: #475569; font-size: 0.8rem; padding: 6px 12px;">Logout</button>
+            </div>
+        </div>
+
+        <div id="requestsContainer"></div>
+    </div>
+
+    <script>
+        let adminToken = localStorage.getItem('adminToken');
+
+        function checkAuth() {
+            if (adminToken) {
+                document.getElementById('loginSection').style.display = 'none';
+                document.getElementById('adminDashboard').style.display = 'block';
+                fetchPendingPayouts();
+            } else {
+                document.getElementById('loginSection').style.display = 'block';
+                document.getElementById('adminDashboard').style.display = 'none';
+            }
+        }
+
+        async function handleLogin(e) {
+            e.preventDefault();
+            const email = document.getElementById('adminEmail').value;
+            const password = document.getElementById('adminPassword').value;
+            const errorDiv = document.getElementById('loginError');
+            errorDiv.innerText = '';
+
+            try {
+                const res = await fetch('/v1/admin/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password })
+                });
+                const data = await res.json();
+
+                if (res.ok && data.token) {
+                    adminToken = data.token;
+                    localStorage.setItem('adminToken', adminToken);
+                    checkAuth();
+                } else {
+                    errorDiv.innerText = data.error || 'Invalid Admin Credentials';
+                }
+            } catch (err) {
+                errorDiv.innerText = 'Network error reaching backend server.';
+            }
+        }
+
+        function logoutAdmin() {
+            localStorage.removeItem('adminToken');
+            adminToken = null;
+            checkAuth();
+        }
+
+        async function fetchPendingPayouts() {
+            const container = document.getElementById('requestsContainer');
+            container.innerHTML = '<p class="empty">Loading requests...</p>';
+
+            try {
+                const res = await fetch('/v1/admin/payouts/pending', {
+                    headers: { 'Authorization': `Bearer ${adminToken}` }
+                });
+                const payouts = await res.json();
+
+                if (!res.ok) {
+                    if (res.status === 401 || res.status === 403) logoutAdmin();
+                    return;
+                }
+
+                if (payouts.length === 0) {
+                    container.innerHTML = '<p class="empty">No pending payout requests at the moment.</p>';
+                    return;
+                }
+
+                container.innerHTML = '';
+                payouts.forEach(req => {
+                    const date = new Date(req.createdAt).toLocaleString();
+                    const card = document.createElement('div');
+                    card.className = 'card';
+                    card.innerHTML = `
+                        <div style="display: flex; align-items: center;">
+                            <div class="amount">$${req.amount.toFixed(2)}</div>
+                            <div class="details">
+                                <h3>${req.userEmail}</h3>
+                                <p><strong>Method:</strong> ${req.method} | <strong>Account:</strong> ${req.accountId}</p>
+                                <p style="font-size: 0.8rem; margin-top: 4px;">Requested: ${date}</p>
+                            </div>
+                        </div>
+                        <div class="actions">
+                            <button class="btn-approve" onclick="handleAction('${req._id}', 'approve')">Approve</button>
+                            <button class="btn-reject" onclick="handleAction('${req._id}', 'reject')">Reject</button>
+                        </div>
+                    `;
+                    container.appendChild(card);
+                });
+            } catch (error) {
+                container.innerHTML = '<p class="empty" style="color: red;">Failed to load requests.</p>';
+            }
+        }
+
+        async function handleAction(id, action) {
+            if (!confirm(`Are you sure you want to ${action} this request?`)) return;
+
+            try {
+                const res = await fetch(`/v1/admin/payouts/${id}/${action}`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${adminToken}` }
+                });
+                const data = await res.json();
+                
+                if (data.status === 'success') {
+                    alert(`Success: Payout ${action}d!`);
+                    fetchPendingPayouts(); 
+                } else {
+                    alert('Action failed: ' + (data.error || 'Error'));
+                }
+            } catch (error) {
+                alert('An error occurred.');
+            }
+        }
+
+        // Initial check on load
+        checkAuth();
+    </script>
+</body>
+</html>
