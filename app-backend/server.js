@@ -77,13 +77,17 @@ const apiRouter = express.Router();
 apiRouter.post('/auth/signup', async (req, res) => {
     const { name, email, password } = req.body;
     try {
+        if (!name || !name.trim()) return res.status(400).json({ error: "Please enter your Full Name." });
+        if (!email || !email.trim()) return res.status(400).json({ error: "Please enter your Email address." });
+        if (!password) return res.status(400).json({ error: "Please enter a Password." });
+
         const existingUser = await User.findOne({ email });
         if (existingUser) return res.status(400).json({ error: "Email already in use." });
 
         const hashedPassword = await bcrypt.hash(password, 10);
-        await User.create({ name, email, password: hashedPassword });
+        await User.create({ name: name.trim(), email: email.trim(), password: hashedPassword });
         res.status(201).json({ status: "success", message: "User registered successfully!" });
-    } catch (error) { res.status(500).json({ error: "Database error during signup." }); }
+    } catch (error) { res.status(500).json({ error: error.message || "Database error during signup." }); }
 });
 
 apiRouter.post('/auth/login', async (req, res) => {
