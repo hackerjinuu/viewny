@@ -54,6 +54,8 @@ const payoutSchema = new mongoose.Schema({
     amount: Number,
     method: String,
     accountId: String,
+    driveProofLink: String,
+    name: String,
     status: { type: String, default: 'pending' },
     createdAt: { type: Date, default: Date.now }
 });
@@ -169,7 +171,7 @@ apiRouter.delete('/user/views/:id', requireAuth, async (req, res) => {
 });
 
 apiRouter.post('/user/payout', requireAuth, async (req, res) => {
-    const { amount, method, accountId } = req.body;
+    const { amount, method, accountId, driveProofLink, name } = req.body;
     try {
         const user = await User.findOne({ email: req.userEmail });
         if (amount > user.withdrawableBalance) {
@@ -180,7 +182,15 @@ apiRouter.post('/user/payout', requireAuth, async (req, res) => {
         user.withdrawableBalance = parseFloat(user.withdrawableBalance.toFixed(2));
         await user.save();
 
-        await Payout.create({ userEmail: user.email, amount, method, accountId, status: 'pending' });
+        await Payout.create({
+            userEmail: user.email,
+            amount,
+            method,
+            accountId,
+            driveProofLink,
+            name,
+            status: 'pending'
+        });
         res.status(200).json({ status: "success", message: "Payout pending admin approval." });
     } catch (error) { res.status(500).json({ error: "Database error processing payout." }); }
 });

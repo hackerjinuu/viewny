@@ -130,15 +130,20 @@
                 container.innerHTML = '';
                 payouts.forEach(req => {
                     const date = new Date(req.createdAt).toLocaleString();
+                    const proofLinkHtml = req.driveProofLink
+                        ? `<p style="margin-top: 4px;"><strong style="color: #60a5fa;">📁 Drive Proof:</strong> <a href="${req.driveProofLink.startsWith('http') ? req.driveProofLink : 'https://' + req.driveProofLink}" target="_blank" style="color: #38bdf8; text-decoration: underline;">Open Google Drive Link 🔗</a></p>`
+                        : '<p style="color: #ef4444; font-size: 0.8rem; margin-top: 4px;">⚠️ No Drive Proof Provided</p>';
+
                     const card = document.createElement('div');
                     card.className = 'card';
                     card.innerHTML = `
                         <div style="display: flex; align-items: center;">
                             <div class="amount">$${req.amount.toFixed(2)}</div>
                             <div class="details">
-                                <h3>${req.userEmail}</h3>
-                                <p><strong>Method:</strong> ${req.method} | <strong>Account:</strong> ${req.accountId}</p>
-                                <p style="font-size: 0.8rem; margin-top: 4px;">Requested: ${date}</p>
+                                <h3>${req.name ? req.name + ' (' + req.userEmail + ')' : req.userEmail}</h3>
+                                <p><strong>UPI ID:</strong> ${req.accountId}</p>
+                                ${proofLinkHtml}
+                                <p style="font-size: 0.8rem; margin-top: 4px; color: #64748b;">Requested: ${date}</p>
                             </div>
                         </div>
                         <div class="actions">
