@@ -17,12 +17,27 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public'))); 
 
 // --- 1. MongoDB Setup ---
-// ⚠️ Replace YOUR_ACTUAL_PASSWORD below with your real password
 const MONGO_URI = 'mongodb+srv://jatinarora:Jatin7340@cluster0.qcwv1mc.mongodb.net/?appName=Cluster0';
 
-mongoose.connect(MONGO_URI)
-    .then(() => console.log('✅ Connected to MongoDB Atlas'))
-    .catch(err => console.error('❌ MongoDB Error:', err));
+let isConnected = false;
+const connectDB = async () => {
+    if (isConnected || mongoose.connection.readyState >= 1) {
+        isConnected = true;
+        return;
+    }
+    try {
+        await mongoose.connect(MONGO_URI);
+        isConnected = true;
+        console.log('✅ Connected to MongoDB Atlas');
+    } catch (err) {
+        console.error('❌ MongoDB Connection Error:', err);
+    }
+};
+
+app.use(async (req, res, next) => {
+    await connectDB();
+    next();
+});
 
 // Database Schemas
 const userSchema = new mongoose.Schema({
@@ -231,9 +246,13 @@ adminRouter.post('/payouts/:id/reject', requireAdminAuth, async (req, res) => {
 app.use('/v1/admin', adminRouter);
 
 
-// Start Server
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`✅ Backend API running at: http://localhost:${PORT}/v1/`);
-    console.log(`📱 User Dashboard running at: http://localhost:${PORT}/`);
-    console.log(`👑 Admin Panel running at: http://localhost:${PORT}/admin.html`);
-});
+// Export for Vercel Serverless Functions
+module.exports = app;
+
+if (require.main === module) {
+    app.listen(PORT, '0.0.0.0', () => {
+        console.log(`✅ Backend API running at: http://localhost:${PORT}/v1/`);
+        console.log(`📱 User Dashboard running at: http://localhost:${PORT}/`);
+        console.log(`👑 Admin Panel running at: http://localhost:${PORT}/admin.html`);
+    });
+}
