@@ -79,9 +79,9 @@ const apiRouter = express.Router();
 
 apiRouter.get('/app/version', (req, res) => {
     res.status(200).json({
-        versionCode: 3,
-        versionName: "1.2.0",
-        forceUpdate: true,
+        versionCode: 2,
+        versionName: "1.1.0",
+        forceUpdate: false,
         downloadUrl: "https://viewny-download.vercel.app/",
         updateNotes: "New features, bug fixes, and security enhancements!"
     });
