@@ -74,8 +74,18 @@ const viewEntrySchema = new mongoose.Schema({
 const ViewEntry = mongoose.model('ViewEntry', viewEntrySchema);
 
 
-// --- 2. AUTHENTICATION API ROUTES ---
+// --- 2. AUTHENTICATION & PUBLIC API ROUTES ---
 const apiRouter = express.Router();
+
+apiRouter.get('/app/version', (req, res) => {
+    res.status(200).json({
+        versionCode: 2,
+        versionName: "1.1.0",
+        forceUpdate: true,
+        downloadUrl: "https://app-backend-delta-livid.vercel.app/download.html",
+        updateNotes: "New features, bug fixes, and security enhancements!"
+    });
+});
 
 apiRouter.post('/auth/signup', async (req, res) => {
     const { name, email, password } = req.body;
