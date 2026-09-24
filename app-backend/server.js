@@ -82,7 +82,7 @@ apiRouter.get('/app/version', (req, res) => {
         versionCode: 2,
         versionName: "1.1.0",
         forceUpdate: true,
-        downloadUrl: "https://app-backend-delta-livid.vercel.app/download.html",
+        downloadUrl: "https://viewny-download.vercel.app/",
         updateNotes: "New features, bug fixes, and security enhancements!"
     });
 });
