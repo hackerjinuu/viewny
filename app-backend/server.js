@@ -65,6 +65,7 @@ const viewEntrySchema = new mongoose.Schema({
     userEmail: String,
     title: String,
     platform: String,
+    logType: { type: String, default: 'Regular' },
     views: Number,
     earnings: Number,
     ratePerThousand: Number,
@@ -133,10 +134,17 @@ apiRouter.get('/user/balance', requireAuth, async (req, res) => {
 });
 
 apiRouter.post('/user/views', requireAuth, async (req, res) => {
-    const { title, platform, views, earnings, ratePerThousand, dateMillis } = req.body;
+    const { title, platform, logType, views, earnings, ratePerThousand, dateMillis } = req.body;
     try {
         const newEntry = await ViewEntry.create({
-            userEmail: req.userEmail, title, platform, views, earnings, ratePerThousand, dateMillis
+            userEmail: req.userEmail,
+            title,
+            platform,
+            logType: logType || 'Regular',
+            views,
+            earnings,
+            ratePerThousand,
+            dateMillis
         });
 
         const user = await User.findOne({ email: req.userEmail });
