@@ -73,6 +73,13 @@ const viewEntrySchema = new mongoose.Schema({
 });
 const ViewEntry = mongoose.model('ViewEntry', viewEntrySchema);
 
+const settingsSchema = new mongoose.Schema({
+    key: { type: String, unique: true, default: 'rates' },
+    regularRate: { type: Number, default: 0.30 },
+    scriptedRate: { type: Number, default: 0.50 }
+});
+const Settings = mongoose.model('Settings', settingsSchema);
+
 
 // --- 2. AUTHENTICATION & PUBLIC API ROUTES ---
 const apiRouter = express.Router();
@@ -83,8 +90,20 @@ apiRouter.get('/app/version', (req, res) => {
         versionName: "1.1.0",
         forceUpdate: false,
         downloadUrl: "https://viewny-download.vercel.app/",
-        updateNotes: "New features, bug fixes, and security enhancements!"
+        updateNotes: "You are on the latest version of Viewny!"
     });
+});
+
+apiRouter.get('/app/rates', async (req, res) => {
+    try {
+        let settings = await Settings.findOne({ key: 'rates' });
+        if (!settings) {
+            settings = await Settings.create({ key: 'rates', regularRate: 0.30, scriptedRate: 0.50 });
+        }
+        res.status(200).json({ regularRate: settings.regularRate, scriptedRate: settings.scriptedRate });
+    } catch (error) {
+        res.status(200).json({ regularRate: 0.30, scriptedRate: 0.50 });
+    }
 });
 
 apiRouter.post('/auth/signup', async (req, res) => {
@@ -144,25 +163,33 @@ apiRouter.get('/user/balance', requireAuth, async (req, res) => {
 });
 
 apiRouter.post('/user/views', requireAuth, async (req, res) => {
-    const { title, platform, logType, views, earnings, ratePerThousand, dateMillis } = req.body;
+    const { title, platform, logType, views, ratePerThousand, dateMillis } = req.body;
     try {
+        let settings = await Settings.findOne({ key: 'rates' });
+        if (!settings) {
+            settings = { regularRate: 0.30, scriptedRate: 0.50 };
+        }
+        const activeLogType = logType || 'Regular';
+        const applicableRate = (activeLogType === 'Scripted') ? settings.scriptedRate : settings.regularRate;
+        const calculatedEarnings = parseFloat(((views / 1000) * applicableRate).toFixed(2));
+
         const newEntry = await ViewEntry.create({
             userEmail: req.userEmail,
             title,
             platform,
-            logType: logType || 'Regular',
+            logType: activeLogType,
             views,
-            earnings,
-            ratePerThousand,
+            earnings: calculatedEarnings,
+            ratePerThousand: applicableRate,
             dateMillis
         });
 
         const user = await User.findOne({ email: req.userEmail });
-        user.withdrawableBalance += earnings;
+        user.withdrawableBalance += calculatedEarnings;
         user.withdrawableBalance = parseFloat(user.withdrawableBalance.toFixed(2));
         await user.save();
 
-        res.status(201).json({ status: "success", backendId: newEntry._id.toString(), newBalance: user.withdrawableBalance });
+        res.status(201).json({ status: "success", backendId: newEntry._id.toString(), newBalance: user.withdrawableBalance, earnings: calculatedEarnings, ratePerThousand: applicableRate });
     } catch (error) { res.status(500).json({ error: "Database error adding view entry." }); }
 });
 
@@ -244,6 +271,40 @@ const requireAdminAuth = (req, res, next) => {
         next();
     });
 };
+
+adminRouter.get('/rates', requireAdminAuth, async (req, res) => {
+    try {
+        let settings = await Settings.findOne({ key: 'rates' });
+        if (!settings) {
+            settings = await Settings.create({ key: 'rates', regularRate: 0.30, scriptedRate: 0.50 });
+        }
+        res.json({ status: "success", rates: { regularRate: settings.regularRate, scriptedRate: settings.scriptedRate } });
+    } catch (error) { res.status(500).json({ error: "Database error" }); }
+});
+
+adminRouter.post('/rates', requireAdminAuth, async (req, res) => {
+    const { regularRate, scriptedRate } = req.body;
+    const numRegular = parseFloat(regularRate);
+    const numScripted = parseFloat(scriptedRate);
+
+    if (isNaN(numRegular) || numRegular < 0 || isNaN(numScripted) || numScripted < 0) {
+        return res.status(400).json({ error: "Invalid price values. Prices must be non-negative numbers." });
+    }
+
+    try {
+        let settings = await Settings.findOne({ key: 'rates' });
+        if (!settings) {
+            settings = new Settings({ key: 'rates', regularRate: numRegular, scriptedRate: numScripted });
+        } else {
+            settings.regularRate = numRegular;
+            settings.scriptedRate = numScripted;
+        }
+        await settings.save();
+        res.status(200).json({ status: "success", rates: { regularRate: settings.regularRate, scriptedRate: settings.scriptedRate } });
+    } catch (error) {
+        res.status(500).json({ error: "Database error updating rates." });
+    }
+});
 
 adminRouter.get('/payouts/pending', requireAdminAuth, async (req, res) => {
     try {
