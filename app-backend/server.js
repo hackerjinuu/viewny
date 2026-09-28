@@ -97,11 +97,11 @@ const apiRouter = express.Router();
 
 apiRouter.get('/app/version', (req, res) => {
     res.status(200).json({
-        versionCode: 2,
-        versionName: "1.1.0",
+        versionCode: 3,
+        versionName: "1.2.0",
         forceUpdate: false,
         downloadUrl: "https://viewny-download.vercel.app/",
-        updateNotes: "You are on the latest version of Viewny!"
+        updateNotes: "🚀 Viewny 1.2.0: Scripted vs Regular View logs, Cloud User Goals, Custom Admin Rates, and performance improvements!"
     });
 });
 
