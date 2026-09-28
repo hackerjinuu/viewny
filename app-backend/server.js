@@ -80,6 +80,17 @@ const settingsSchema = new mongoose.Schema({
 });
 const Settings = mongoose.model('Settings', settingsSchema);
 
+const targetSchema = new mongoose.Schema({
+    userEmail: { type: String, required: true, unique: true },
+    title: { type: String, default: "500K Views Milestone" },
+    targetType: { type: String, default: "VIEWS" },
+    targetViews: { type: Number, default: 500000 },
+    targetEarnings: { type: Number, default: 150 },
+    timeframe: { type: String, default: "All-time" },
+    isActive: { type: Boolean, default: true }
+});
+const Target = mongoose.model('Target', targetSchema);
+
 
 // --- 2. AUTHENTICATION & PUBLIC API ROUTES ---
 const apiRouter = express.Router();
@@ -245,6 +256,50 @@ apiRouter.get('/user/payouts', requireAuth, async (req, res) => {
         const payouts = await Payout.find({ userEmail: req.userEmail }).sort({ createdAt: -1 });
         res.status(200).json(payouts);
     } catch (error) { res.status(500).json({ error: "Database error" }); }
+});
+
+apiRouter.get('/user/target', requireAuth, async (req, res) => {
+    try {
+        let target = await Target.findOne({ userEmail: req.userEmail });
+        if (!target) {
+            target = {
+                title: "500K Views Milestone",
+                targetType: "VIEWS",
+                targetViews: 500000,
+                targetEarnings: 150,
+                timeframe: "All-time",
+                isActive: true
+            };
+        }
+        res.status(200).json(target);
+    } catch (error) { res.status(500).json({ error: "Database error" }); }
+});
+
+apiRouter.post('/user/target', requireAuth, async (req, res) => {
+    const { title, targetType, targetViews, targetEarnings, timeframe, isActive } = req.body;
+    try {
+        let target = await Target.findOne({ userEmail: req.userEmail });
+        if (!target) {
+            target = new Target({
+                userEmail: req.userEmail,
+                title: title || "500K Views Milestone",
+                targetType: targetType || "VIEWS",
+                targetViews: targetViews || 500000,
+                targetEarnings: targetEarnings || 150,
+                timeframe: timeframe || "All-time",
+                isActive: isActive !== undefined ? isActive : true
+            });
+        } else {
+            if (title) target.title = title;
+            if (targetType) target.targetType = targetType;
+            if (targetViews !== undefined) target.targetViews = targetViews;
+            if (targetEarnings !== undefined) target.targetEarnings = targetEarnings;
+            if (timeframe) target.timeframe = timeframe;
+            if (isActive !== undefined) target.isActive = isActive;
+        }
+        await target.save();
+        res.status(200).json({ status: "success", target });
+    } catch (error) { res.status(500).json({ error: "Database error saving target." }); }
 });
 app.use('/v1', apiRouter);
 
