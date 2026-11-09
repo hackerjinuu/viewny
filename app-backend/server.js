@@ -45,7 +45,9 @@ const userSchema = new mongoose.Schema({
     email: { type: String, required: true, unique: true },
     password: { type: String, required: true }, 
     withdrawableBalance: { type: Number, default: 0 },
-    currencySymbol: { type: String, default: "$" }
+    currencySymbol: { type: String, default: "$" },
+    customRegularRate: { type: Number, default: null },
+    customScriptedRate: { type: Number, default: null } 
 });
 const User = mongoose.model('User', userSchema);
 
@@ -92,12 +94,11 @@ const targetSchema = new mongoose.Schema({
 const Target = mongoose.model('Target', targetSchema);
 
 
-// --- 2. AUTHENTICATION & PUBLIC API ROUTES ---
+// --- 2. USER API ROUTES ---
 const apiRouter = express.Router();
 
-// Version Control Middleware: Blocks older versions of the app.
+// Version Control Middleware
 apiRouter.use((req, res, next) => {
-    // Allow the version check route itself so they can see the update notes.
     if (req.path === '/app/version') return next();
 
     const appVersion = parseInt(req.headers['x-app-version'] || '0', 10);
@@ -180,8 +181,6 @@ const requireAuth = (req, res, next) => {
     });
 };
 
-
-// --- 3. SECURED USER API ROUTES ---
 apiRouter.get('/user/balance', requireAuth, async (req, res) => {
     try {
         const user = await User.findOne({ email: req.userEmail });
@@ -192,12 +191,26 @@ apiRouter.get('/user/balance', requireAuth, async (req, res) => {
 apiRouter.post('/user/views', requireAuth, async (req, res) => {
     const { title, platform, logType, views, ratePerThousand, dateMillis } = req.body;
     try {
+        const user = await User.findOne({ email: req.userEmail });
+        
         let settings = await Settings.findOne({ key: 'rates' });
         if (!settings) {
             settings = { regularRate: 0.30, scriptedRate: 0.50 };
         }
+        
         const activeLogType = logType || 'Regular';
-        const applicableRate = (activeLogType === 'Scripted') ? settings.scriptedRate : settings.regularRate;
+        
+        let applicableRate = 0;
+        if (activeLogType === 'Scripted') {
+            applicableRate = (user.customScriptedRate !== null && user.customScriptedRate !== undefined) 
+                ? user.customScriptedRate 
+                : settings.scriptedRate;
+        } else {
+            applicableRate = (user.customRegularRate !== null && user.customRegularRate !== undefined) 
+                ? user.customRegularRate 
+                : settings.regularRate;
+        }
+
         const calculatedEarnings = parseFloat(((views / 1000) * applicableRate).toFixed(2));
 
         const newEntry = await ViewEntry.create({
@@ -211,7 +224,6 @@ apiRouter.post('/user/views', requireAuth, async (req, res) => {
             dateMillis
         });
 
-        const user = await User.findOne({ email: req.userEmail });
         user.withdrawableBalance += calculatedEarnings;
         user.withdrawableBalance = parseFloat(user.withdrawableBalance.toFixed(2));
         await user.save();
@@ -317,10 +329,9 @@ apiRouter.post('/user/target', requireAuth, async (req, res) => {
         res.status(200).json({ status: "success", target });
     } catch (error) { res.status(500).json({ error: "Database error saving target." }); }
 });
-app.use('/v1', apiRouter);
 
 
-// --- 4. ADMIN API ROUTES ---
+// --- 3. ADMIN API ROUTES ---
 const adminRouter = express.Router();
 
 adminRouter.post('/login', (req, res) => {
@@ -407,7 +418,34 @@ adminRouter.post('/payouts/:id/reject', requireAdminAuth, async (req, res) => {
         }
     } catch (error) { res.status(500).json({ error: "Database error" }); }
 });
+
+adminRouter.get('/users', requireAdminAuth, async (req, res) => {
+    try {
+        const users = await User.find({}, 'name email customRegularRate customScriptedRate');
+        res.json(users);
+    } catch (error) { res.status(500).json({ error: "Database error" }); }
+});
+
+adminRouter.post('/users/:email/rates', requireAdminAuth, async (req, res) => {
+    const { regularRate, scriptedRate } = req.body;
+    try {
+        const user = await User.findOne({ email: req.params.email });
+        if (!user) return res.status(404).json({ error: "User not found" });
+
+        user.customRegularRate = regularRate === '' ? null : parseFloat(regularRate);
+        user.customScriptedRate = scriptedRate === '' ? null : parseFloat(scriptedRate);
+
+        await user.save();
+        res.json({ status: "success", message: "User rates updated" });
+    } catch (error) { res.status(500).json({ error: "Database error" }); }
+});
+
+
+// --- 4. MOUNT ROUTERS ---
+// CRITICAL FIX: We must mount the Admin router BEFORE the general /v1 API router.
+// This prevents the /v1 router's version check from intercepting /v1/admin requests.
 app.use('/v1/admin', adminRouter);
+app.use('/v1', apiRouter);
 
 
 // Export for Vercel Serverless Functions

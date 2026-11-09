@@ -57,9 +57,9 @@
             </div>
         </div>
 
-        <!-- PRICE SETTINGS CARD -->
+        <!-- GLOBAL PRICE SETTINGS CARD -->
         <div style="background: #1e293b; padding: 20px; border-radius: 12px; border: 1px solid #334155; margin-bottom: 25px;">
-            <h3 style="margin-top: 0; color: #f8fafc; border-bottom: 1px solid #334155; padding-bottom: 10px;">⚙️ Admin Price Settings (Per 1,000 Views)</h3>
+            <h3 style="margin-top: 0; color: #f8fafc; border-bottom: 1px solid #334155; padding-bottom: 10px;">⚙️ Global Price Settings (Per 1,000 Views)</h3>
             <form id="priceForm" onsubmit="handleSaveRates(event)" style="display: flex; gap: 20px; align-items: flex-end; flex-wrap: wrap;">
                 <div style="flex: 1; min-width: 180px;">
                     <label style="display: block; color: #94a3b8; font-size: 0.85rem; margin-bottom: 5px;">Regular Logs Price ($)</label>
@@ -69,9 +69,32 @@
                     <label style="display: block; color: #94a3b8; font-size: 0.85rem; margin-bottom: 5px;">Scripted Logs Price ($)</label>
                     <input type="number" id="scriptedRateInput" step="0.01" min="0" placeholder="0.50" style="width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: white; box-sizing: border-box;" required>
                 </div>
-                <button type="submit" style="background: #3b82f6; padding: 10px 20px; font-weight: bold; border-radius: 6px; border: none; cursor: pointer; color: white;">Save Prices</button>
+                <button type="submit" style="background: #3b82f6; padding: 10px 20px; font-weight: bold; border-radius: 6px; border: none; cursor: pointer; color: white;">Save Global Prices</button>
             </form>
             <div id="rateMessage" style="margin-top: 10px; font-size: 0.85rem;"></div>
+        </div>
+
+        <!-- USER-SPECIFIC PRICE SETTINGS CARD -->
+        <div style="background: #1e293b; padding: 20px; border-radius: 12px; border: 1px solid #334155; margin-bottom: 25px;">
+            <h3 style="margin-top: 0; color: #f8fafc; border-bottom: 1px solid #334155; padding-bottom: 10px;">👤 User-Specific Rates</h3>
+            <form id="userRateForm" onsubmit="handleSaveUserRates(event)" style="display: flex; gap: 20px; align-items: flex-end; flex-wrap: wrap;">
+                <div style="flex: 1; min-width: 180px;">
+                    <label style="display: block; color: #94a3b8; font-size: 0.85rem; margin-bottom: 5px;">Select User</label>
+                    <select id="userSelect" onchange="populateUserRates()" style="width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: white; box-sizing: border-box;">
+                        <option value="">Loading users...</option>
+                    </select>
+                </div>
+                <div style="flex: 1; min-width: 150px;">
+                    <label style="display: block; color: #94a3b8; font-size: 0.85rem; margin-bottom: 5px;">Custom Regular Rate ($)</label>
+                    <input type="number" id="userRegularRate" step="0.01" min="0" placeholder="Leave empty for global" style="width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: white; box-sizing: border-box;">
+                </div>
+                <div style="flex: 1; min-width: 150px;">
+                    <label style="display: block; color: #94a3b8; font-size: 0.85rem; margin-bottom: 5px;">Custom Scripted Rate ($)</label>
+                    <input type="number" id="userScriptedRate" step="0.01" min="0" placeholder="Leave empty for global" style="width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: white; box-sizing: border-box;">
+                </div>
+                <button type="submit" style="background: #10b981; padding: 10px 20px; font-weight: bold; border-radius: 6px; border: none; cursor: pointer; color: white;">Save User Rates</button>
+            </form>
+            <div id="userRateMessage" style="margin-top: 10px; font-size: 0.85rem;"></div>
         </div>
 
         <h3 style="color: #f8fafc; margin-bottom: 15px;">📋 Pending Payout Requests</h3>
@@ -79,13 +102,22 @@
     </div>
 
     <script>
+        const APP_VERSION = 2;
         let adminToken = localStorage.getItem('adminToken');
+        let allUsersList = [];
+
+        function adminFetch(url, options = {}) {
+            const headers = new Headers(options.headers);
+            headers.set('x-app-version', String(APP_VERSION));
+            return fetch(url, { ...options, headers });
+        }
 
         function checkAuth() {
             if (adminToken) {
                 document.getElementById('loginSection').style.display = 'none';
                 document.getElementById('adminDashboard').style.display = 'block';
                 fetchRates();
+                fetchUsers(); 
                 fetchPendingPayouts();
             } else {
                 document.getElementById('loginSection').style.display = 'block';
@@ -95,7 +127,7 @@
 
         async function fetchRates() {
             try {
-                const res = await fetch('/v1/admin/rates', {
+                const res = await adminFetch('/v1/admin/rates', {
                     headers: { 'Authorization': `Bearer ${adminToken}` }
                 });
                 const data = await res.json();
@@ -104,6 +136,68 @@
                     document.getElementById('scriptedRateInput').value = data.rates.scriptedRate;
                 }
             } catch (err) {}
+        }
+
+        async function fetchUsers() {
+            try {
+                const res = await adminFetch('/v1/admin/users', {
+                    headers: { 'Authorization': `Bearer ${adminToken}` }
+                });
+                if (res.ok) {
+                    allUsersList = await res.json();
+                    const select = document.getElementById('userSelect');
+                    select.innerHTML = '<option value="">-- Select a User --</option>';
+                    allUsersList.forEach(u => {
+                        select.innerHTML += `<option value="${u.email}">${u.name} (${u.email})</option>`;
+                    });
+                }
+            } catch (err) {}
+        }
+
+        function populateUserRates() {
+            const email = document.getElementById('userSelect').value;
+            const user = allUsersList.find(u => u.email === email);
+            if (user) {
+                document.getElementById('userRegularRate').value = user.customRegularRate !== null ? user.customRegularRate : '';
+                document.getElementById('userScriptedRate').value = user.customScriptedRate !== null ? user.customScriptedRate : '';
+            } else {
+                document.getElementById('userRegularRate').value = '';
+                document.getElementById('userScriptedRate').value = '';
+            }
+        }
+
+        async function handleSaveUserRates(e) {
+            e.preventDefault();
+            const email = document.getElementById('userSelect').value;
+            if (!email) return alert('Please select a user to update.');
+
+            const regularRate = document.getElementById('userRegularRate').value;
+            const scriptedRate = document.getElementById('userScriptedRate').value;
+            const msgDiv = document.getElementById('userRateMessage');
+            
+            msgDiv.innerText = 'Saving...';
+            msgDiv.style.color = '#94a3b8';
+
+            try {
+                const res = await adminFetch(`/v1/admin/users/${email}/rates`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${adminToken}` },
+                    body: JSON.stringify({ regularRate, scriptedRate })
+                });
+                const data = await res.json();
+                
+                if (res.ok && data.status === 'success') {
+                    msgDiv.innerText = '✅ User rates updated successfully!';
+                    msgDiv.style.color = '#10b981';
+                    fetchUsers(); 
+                } else {
+                    msgDiv.innerText = '❌ Failed to update user rates';
+                    msgDiv.style.color = '#ef4444';
+                }
+            } catch (err) {
+                msgDiv.innerText = '❌ Error saving user rates.';
+                msgDiv.style.color = '#ef4444';
+            }
         }
 
         async function handleSaveRates(e) {
@@ -115,7 +209,7 @@
             msgDiv.style.color = '#94a3b8';
 
             try {
-                const res = await fetch('/v1/admin/rates', {
+                const res = await adminFetch('/v1/admin/rates', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -145,7 +239,7 @@
             errorDiv.innerText = '';
 
             try {
-                const res = await fetch('/v1/admin/login', {
+                const res = await adminFetch('/v1/admin/login', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ email, password })
@@ -175,7 +269,7 @@
             container.innerHTML = '<p class="empty">Loading requests...</p>';
 
             try {
-                const res = await fetch('/v1/admin/payouts/pending', {
+                const res = await adminFetch('/v1/admin/payouts/pending', {
                     headers: { 'Authorization': `Bearer ${adminToken}` }
                 });
                 const payouts = await res.json();
@@ -225,7 +319,7 @@
             if (!confirm(`Are you sure you want to ${action} this request?`)) return;
 
             try {
-                const res = await fetch(`/v1/admin/payouts/${id}/${action}`, {
+                const res = await adminFetch(`/v1/admin/payouts/${id}/${action}`, {
                     method: 'POST',
                     headers: { 'Authorization': `Bearer ${adminToken}` }
                 });
