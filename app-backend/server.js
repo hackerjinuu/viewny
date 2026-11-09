@@ -122,18 +122,6 @@ apiRouter.get('/app/version', (req, res) => {
     });
 });
 
-apiRouter.get('/app/rates', async (req, res) => {
-    try {
-        let settings = await Settings.findOne({ key: 'rates' });
-        if (!settings) {
-            settings = await Settings.create({ key: 'rates', regularRate: 0.30, scriptedRate: 0.50 });
-        }
-        res.status(200).json({ regularRate: settings.regularRate, scriptedRate: settings.scriptedRate });
-    } catch (error) {
-        res.status(200).json({ regularRate: 0.30, scriptedRate: 0.50 });
-    }
-});
-
 apiRouter.post('/auth/signup', async (req, res) => {
     const { name, email, password } = req.body;
     try {
@@ -186,6 +174,23 @@ apiRouter.get('/user/balance', requireAuth, async (req, res) => {
         const user = await User.findOne({ email: req.userEmail });
         res.status(200).json({ withdrawableBalance: user.withdrawableBalance, currencySymbol: user.currencySymbol });
     } catch (error) { res.status(500).json({ error: "Database error" }); }
+});
+
+apiRouter.get('/user/rates', requireAuth, async (req, res) => {
+    try {
+        const user = await User.findOne({ email: req.userEmail });
+        let settings = await Settings.findOne({ key: 'rates' });
+        if (!settings) {
+            settings = await Settings.create({ key: 'rates', regularRate: 0.30, scriptedRate: 0.50 });
+        }
+
+        const regular = (user && user.customRegularRate !== null && user.customRegularRate !== undefined) ? user.customRegularRate : settings.regularRate;
+        const scripted = (user && user.customScriptedRate !== null && user.customScriptedRate !== undefined) ? user.customScriptedRate : settings.scriptedRate;
+
+        res.status(200).json({ regularRate: regular, scriptedRate: scripted });
+    } catch (error) {
+        res.status(200).json({ regularRate: 0.30, scriptedRate: 0.50 });
+    }
 });
 
 apiRouter.post('/user/views', requireAuth, async (req, res) => {
