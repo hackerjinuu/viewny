@@ -95,13 +95,29 @@ const Target = mongoose.model('Target', targetSchema);
 // --- 2. AUTHENTICATION & PUBLIC API ROUTES ---
 const apiRouter = express.Router();
 
+// Version Control Middleware: Blocks older versions of the app.
+apiRouter.use((req, res, next) => {
+    // Allow the version check route itself so they can see the update notes.
+    if (req.path === '/app/version') return next();
+
+    const appVersion = parseInt(req.headers['x-app-version'] || '0', 10);
+    const MIN_REQUIRED_VERSION = 2;
+
+    if (appVersion < MIN_REQUIRED_VERSION) {
+        return res.status(426).json({
+            error: "Please update to the latest version of Viewny to continue."
+        });
+    }
+    next();
+});
+
 apiRouter.get('/app/version', (req, res) => {
     res.status(200).json({
-        versionCode: 3,
-        versionName: "1.2.0",
-        forceUpdate: false,
+        versionCode: 2,
+        versionName: "2.0",
+        forceUpdate: true,
         downloadUrl: "https://viewny-download.vercel.app/",
-        updateNotes: "🚀 Viewny 1.2.0: Scripted vs Regular View logs, Cloud User Goals, Custom Admin Rates, and performance improvements!"
+        updateNotes: "🚀 Viewny 2.0: Important update! Please install the new version to continue."
     });
 });
 
