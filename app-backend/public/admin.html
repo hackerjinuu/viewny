@@ -256,6 +256,33 @@
         @media (max-width: 600px) {
             .header { background: linear-gradient(115deg, #050505, #1b1b1b); }
         }
+
+        /* Receipt modal */
+        .receipt-overlay { position: fixed; inset: 0; z-index: 1000; display: none; align-items: center; justify-content: center; padding: 18px; background: rgba(0,0,0,.7); overflow-y: auto; }
+        .receipt-overlay.open { display: flex; }
+        .receipt-wrap { width: 100%; max-width: 420px; margin: auto; }
+        .receipt-paper { background: #fff; color: #111; border-radius: 14px; padding: 28px 26px; box-shadow: 0 24px 60px rgba(0,0,0,.5); font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+        .receipt-paper h2 { margin: 0; font-size: 1.25rem; text-align: center; letter-spacing: -.4px; }
+        .receipt-paper .r-sub { margin: 4px 0 0; text-align: center; color: #666; font-size: .78rem; }
+        .receipt-badge { display: block; width: fit-content; margin: 16px auto; padding: 5px 14px; border: 1.5px solid #111; border-radius: 99px; font-size: .72rem; font-weight: 800; letter-spacing: 1.4px; }
+        .receipt-amount { text-align: center; font-size: 2.1rem; font-weight: 850; letter-spacing: -1px; margin: 4px 0 18px; }
+        .receipt-rows { border-top: 1px dashed #bbb; padding-top: 12px; }
+        .receipt-row { display: flex; justify-content: space-between; gap: 16px; padding: 7px 0; font-size: .83rem; }
+        .receipt-row span:first-child { color: #666; flex: 0 0 auto; }
+        .receipt-row span:last-child { font-weight: 700; text-align: right; overflow-wrap: anywhere; }
+        .receipt-foot { margin-top: 14px; padding-top: 12px; border-top: 1px dashed #bbb; text-align: center; color: #777; font-size: .72rem; }
+        .receipt-actions { display: flex; gap: 10px; margin-top: 14px; }
+        .receipt-actions button { flex: 1; padding: 12px; border-radius: 10px; font-size: .85rem; font-weight: 800; }
+        .receipt-actions .r-print { background: #f5f5f5; color: #080808; }
+        .receipt-actions .r-close { background: #202020; color: #f5f5f5; border: 1px solid #666; }
+
+        @media print {
+            body > *:not(#receiptModal) { display: none !important; }
+            body { background: #fff !important; padding: 0 !important; max-width: none; }
+            .receipt-overlay { position: static; display: block; background: none; padding: 0; }
+            .receipt-paper { box-shadow: none; border-radius: 0; max-width: 420px; margin: 0 auto; }
+            .receipt-actions { display: none !important; }
+        }
     </style>
 </head>
 <body>
@@ -410,11 +437,26 @@
         </section>
     </div>
 
+    <!-- RECEIPT MODAL -->
+    <div id="receiptModal" class="receipt-overlay" role="dialog" aria-modal="true" aria-label="Payment receipt">
+        <div class="receipt-wrap">
+            <div class="receipt-paper" id="receiptPaper"></div>
+            <div class="receipt-actions">
+                <button type="button" class="r-print" onclick="window.print()">🖨 Print / Save PDF</button>
+                <button type="button" class="r-close" onclick="closeReceipt()">Close</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         const APP_VERSION = 2;
         let adminToken = localStorage.getItem('adminToken');
         let allUsersList = [];
         let allPendingPayouts = [];
+
+        function escapeHtml(v) {
+            return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        }
 
         function togglePasswordVisibility() {
             const input = document.getElementById('adminPassword');
@@ -467,7 +509,7 @@
                     const select = document.getElementById('userSelect');
                     select.innerHTML = '<option value="">-- Select a User --</option>';
                     allUsersList.forEach(u => {
-                        select.innerHTML += `<option value="${u.email}">${u.name} (${u.email})</option>`;
+                        select.innerHTML += `<option value="${escapeHtml(u.email)}">${escapeHtml(u.name)} (${escapeHtml(u.email)})</option>`;
                     });
                 }
             } catch (err) {}
@@ -649,8 +691,11 @@
             container.innerHTML = '';
             filtered.forEach(req => {
                 const date = new Date(req.createdAt).toLocaleString();
-                const proofLinkHtml = req.driveProofLink
-                    ? `<p style="margin-top: 6px;"><strong>▧ Drive proof:</strong> <a href="${req.driveProofLink.startsWith('http') ? req.driveProofLink : 'https://' + req.driveProofLink}" target="_blank" rel="noopener noreferrer">Open Google Drive link ↗</a></p>`
+                const proofUrl = req.driveProofLink
+                    ? (req.driveProofLink.startsWith('http') ? req.driveProofLink : 'https://' + req.driveProofLink)
+                    : '';
+                const proofLinkHtml = proofUrl
+                    ? `<p style="margin-top: 6px;"><strong>▧ Drive proof:</strong> <a href="${escapeHtml(proofUrl)}" target="_blank" rel="noopener noreferrer">Open Google Drive link ↗</a></p>`
                     : '<p class="proof-warning" style="margin-top: 6px;">⚠ No Drive proof provided</p>';
 
                 const card = document.createElement('div');
@@ -659,23 +704,58 @@
                     <div class="payout-main">
                         <div class="amount">$${Number(req.amount).toFixed(2)}</div>
                         <div class="details">
-                            <h3>${req.name ? req.name + ' (' + req.userEmail + ')' : req.userEmail}</h3>
-                            <p><strong>UPI ID:</strong> ${req.accountId}</p>
+                            <h3>${req.name ? escapeHtml(req.name) + ' (' + escapeHtml(req.userEmail) + ')' : escapeHtml(req.userEmail)}</h3>
+                            <p><strong>UPI ID:</strong> ${escapeHtml(req.accountId)}</p>
                             ${proofLinkHtml}
-                            <p class="request-date">Requested: ${date}</p>
+                            <p class="request-date">Requested: ${escapeHtml(date)}</p>
                         </div>
                     </div>
                     <div class="actions">
-                        <button class="btn-approve" onclick="handleAction('${req._id}', 'approve')">Approve</button>
-                        <button class="btn-reject" onclick="handleAction('${req._id}', 'reject')">Reject</button>
+                        <button class="btn-approve" onclick="handleAction('${escapeHtml(req._id)}', 'approve')">Approve</button>
+                        <button class="btn-reject" onclick="handleAction('${escapeHtml(req._id)}', 'reject')">Reject</button>
                     </div>
                 `;
                 container.appendChild(card);
             });
         }
 
+        function showReceipt(req, serverData = {}) {
+            const now = new Date();
+            const ymd = now.toISOString().slice(0, 10).replace(/-/g, '');
+            const receiptNo = serverData.receiptNo || `VT-${ymd}-${String(req._id).slice(-6).toUpperCase()}`;
+            const proof = req.driveProofLink
+                ? (req.driveProofLink.startsWith('http') ? req.driveProofLink : 'https://' + req.driveProofLink)
+                : '';
+
+            document.getElementById('receiptPaper').innerHTML = `
+                <h2>ViewTracker</h2>
+                <p class="r-sub">Payment Receipt</p>
+                <span class="receipt-badge">PAID ✓</span>
+                <div class="receipt-amount">$${Number(req.amount).toFixed(2)}</div>
+                <div class="receipt-rows">
+                    <div class="receipt-row"><span>Receipt No.</span><span>${escapeHtml(receiptNo)}</span></div>
+                    <div class="receipt-row"><span>Paid on</span><span>${escapeHtml(now.toLocaleString())}</span></div>
+                    <div class="receipt-row"><span>Requested on</span><span>${escapeHtml(new Date(req.createdAt).toLocaleString())}</span></div>
+                    <div class="receipt-row"><span>Name</span><span>${escapeHtml(req.name || '—')}</span></div>
+                    <div class="receipt-row"><span>Email</span><span>${escapeHtml(req.userEmail)}</span></div>
+                    <div class="receipt-row"><span>UPI ID</span><span>${escapeHtml(req.accountId)}</span></div>
+                    <div class="receipt-row"><span>Status</span><span>Approved</span></div>
+                    ${proof ? `<div class="receipt-row"><span>Proof</span><span>${escapeHtml(proof)}</span></div>` : ''}
+                </div>
+                <div class="receipt-foot">This is a computer-generated receipt.<br>Thank you for being a part of ViewTracker.</div>
+            `;
+            document.getElementById('receiptModal').classList.add('open');
+        }
+
+        function closeReceipt() {
+            document.getElementById('receiptModal').classList.remove('open');
+        }
+
         async function handleAction(id, action) {
             if (!confirm(`Are you sure you want to ${action} this request?`)) return;
+
+            // Grab the request details BEFORE the list refreshes
+            const req = allPendingPayouts.find(r => r._id === id);
 
             try {
                 const res = await adminFetch(`/v1/admin/payouts/${id}/${action}`, {
@@ -685,7 +765,11 @@
                 const data = await res.json();
                 
                 if (data.status === 'success') {
-                    alert(`Success: Payout ${action}d!`);
+                    if (action === 'approve' && req) {
+                        showReceipt(req, data);
+                    } else {
+                        alert(`Success: Payout ${action}d!`);
+                    }
                     fetchPendingPayouts(); 
                 } else {
                     alert('Action failed: ' + (data.error || 'Error'));
