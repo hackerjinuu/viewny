@@ -21,6 +21,12 @@ const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || '$2a$12$2YogCT/R/
 const TRIAL_DAYS = 5;
 const TRIAL_DAILY_EXPORTS = 5;
 
+// AI hook writer (Groq). Put your key in Vercel → Settings → Environment Variables as GROQ_API_KEY.
+const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
+const GROQ_MODELS = (process.env.GROQ_MODELS || 'openai/gpt-oss-120b,openai/gpt-oss-20b').split(',').map(s => s.trim()).filter(Boolean);
+// AI hooks per day (India time) for each plan
+const AI_DAILY = { pro: 100, trial: 25, free: 3 };
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -64,7 +70,9 @@ const userSchema = new mongoose.Schema({
     trialEndsAt: { type: Date, default: null },
     exportDay: { type: String, default: '' },   // YYYY-MM-DD (India time) the count below belongs to
     exportCount: { type: Number, default: 0 },
-    exportsTotal: { type: Number, default: 0 }
+    exportsTotal: { type: Number, default: 0 },
+    aiDay: { type: String, default: '' },        // YYYY-MM-DD the AI count below belongs to
+    aiCount: { type: Number, default: 0 }
 });
 const User = mongoose.model('User', userSchema);
 
@@ -265,6 +273,75 @@ apiRouter.post('/user/export/begin', requireAuth, async (req, res) => {
         await user.save();
         res.status(200).json({ status: "success", access: accessOf(user) });
     } catch (error) { res.status(500).json({ error: "Database error" }); }
+});
+
+// jarecut: AI writes the on-screen top hook from the video's transcript (Groq)
+const HOOK_SYSTEM = `You write the on-screen HOOK headline for short vertical videos (Reels, Shorts, TikTok).
+The hook sits at the top of the video and must make people stop scrolling in the first second.
+You get the video's transcript. Write 5 different hook options, then pick the best one.
+Rules:
+- Max 8 words each. Short, punchy, easy to read in one glance.
+- Same language and style as the transcript (Hindi stays Hindi, Hinglish stays Hinglish in Latin letters, English stays English).
+- Use proven angles: curiosity gap, bold claim, surprising number, mistake/warning, "how to", contrarian take.
+- Only promise what the video actually says. No made-up facts, no fake numbers.
+- No hashtags, no quotes around the text, at most one emoji and only if it really fits.
+Answer ONLY with JSON: {"hooks":[{"text":"...","angle":"curiosity|claim|number|warning|howto|contrarian"}],"best":0}`;
+
+async function groqHooks(transcript, durationSec) {
+    const user = `Video length: ${Math.round(durationSec || 0)} seconds.\nTranscript:\n"""${transcript}"""`;
+    let lastErr = null;
+    for (const model of GROQ_MODELS) {
+        // first with the extra settings for reasoning models, then plain (in case this model rejects them)
+        for (const extra of [{ reasoning_effort: 'low', include_reasoning: false }, {}]) {
+            try {
+                const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model, temperature: 0.9, max_completion_tokens: 1200,
+                        response_format: { type: 'json_object' },
+                        messages: [{ role: 'system', content: HOOK_SYSTEM }, { role: 'user', content: user }],
+                        ...extra
+                    })
+                });
+                const j = await r.json().catch(() => ({}));
+                if (!r.ok) {
+                    lastErr = new Error((j.error && j.error.message) || `Groq error ${r.status}`);
+                    if (r.status === 400 && Object.keys(extra).length) continue;   // retry without the extras
+                    break;                                                         // busy / limit: try the next model
+                }
+                const text = (((j.choices || [])[0] || {}).message || {}).content || '';
+                let parsed = null;
+                try { parsed = JSON.parse(text); } catch (e) { const m = text.match(/\{[\s\S]*\}/); if (m) { try { parsed = JSON.parse(m[0]); } catch (e2) {} } }
+                const hooks = ((parsed && parsed.hooks) || [])
+                    .map(h => ({ text: String((h && h.text) || h || '').replace(/^["'“”]+|["'“”]+$/g, '').trim(), angle: String((h && h.angle) || '') }))
+                    .filter(h => h.text && h.text.split(/\s+/).length <= 14).slice(0, 5);
+                if (!hooks.length) { lastErr = new Error('The AI returned no usable hooks.'); break; }
+                let best = parseInt(parsed.best, 10); if (!(best >= 0 && best < hooks.length)) best = 0;
+                return { hooks, best, model };
+            } catch (e) { lastErr = e; break; }
+        }
+    }
+    throw lastErr || new Error('AI is busy. Try again in a minute.');
+}
+
+apiRouter.post('/user/ai/hook', requireAuth, async (req, res) => {
+    try {
+        if (!GROQ_API_KEY) return res.status(503).json({ error: "AI hooks are not set up on the server yet (GROQ_API_KEY missing)." });
+        const transcript = String((req.body || {}).transcript || '').replace(/\s+/g, ' ').trim().slice(0, 6000);
+        if (transcript.split(' ').length < 5) return res.status(400).json({ error: "Not enough speech in this clip to write a hook." });
+        const user = await User.findOne({ email: req.userEmail });
+        if (!user) return res.status(404).json({ error: "User not found." });
+        const plan = accessOf(user).plan;
+        const limit = AI_DAILY[plan] || AI_DAILY.free;
+        const today = istDay();
+        if (user.aiDay !== today) { user.aiDay = today; user.aiCount = 0; }
+        if (user.aiCount >= limit) return res.status(429).json({ error: `You used all ${limit} AI hooks for today. More tomorrow.` });
+        const out = await groqHooks(transcript, (req.body || {}).duration);
+        user.aiCount += 1;
+        await user.save();
+        res.status(200).json({ status: "success", ...out, left: Math.max(0, limit - user.aiCount) });
+    } catch (error) { res.status(502).json({ error: error.message || "AI error" }); }
 });
 
 // jarecut: give the export back if it failed or was cancelled
