@@ -8,8 +8,18 @@ const jwt = require('jsonwebtoken');
 const app = express();
 const PORT = 3000;
 
-// Security Secret for JWT tokens
-const JWT_SECRET = "my_super_secret_app_key_123!";
+// Secrets: set these in Vercel → Project → Settings → Environment Variables.
+// (The old values stay as a fallback so nothing breaks, but move them out of the code.)
+const JWT_SECRET = process.env.JWT_SECRET || "my_super_secret_app_key_123!";
+
+// Admin login (used by the jarecut app's Admin screen and admin.html).
+// Only a bcrypt hash of the password is stored; the password itself is not in the code or the app.
+const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'jatin@gmail.com').toLowerCase();
+const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || '$2a$12$2YogCT/R/nEFrTJ4nNzR5e2f5nQefw/DQ17/BapuTFl1wh7w1nHCO';
+
+// Free trial: length and exports per day (India time)
+const TRIAL_DAYS = 5;
+const TRIAL_DAILY_EXPORTS = 5;
 
 // Middleware
 app.use(cors());
@@ -17,7 +27,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public'))); 
 
 // --- 1. MongoDB Setup ---
-const MONGO_URI = 'mongodb+srv://jatinarora:Jatin7340@cluster0.qcwv1mc.mongodb.net/?appName=Cluster0';
+const MONGO_URI = process.env.MONGO_URI || 'mongodb+srv://jatinarora:Jatin7340@cluster0.qcwv1mc.mongodb.net/?appName=Cluster0';
 
 let isConnected = false;
 const connectDB = async () => {
@@ -47,9 +57,48 @@ const userSchema = new mongoose.Schema({
     withdrawableBalance: { type: Number, default: 0 },
     currencySymbol: { type: String, default: "$" },
     customRegularRate: { type: Number, default: null },
-    customScriptedRate: { type: Number, default: null } 
+    customScriptedRate: { type: Number, default: null },
+    // jarecut access: 'free' (no exports unless on trial) or 'pro' (unlimited, set by admin)
+    plan: { type: String, default: 'free' },
+    trialStartedAt: { type: Date, default: null },
+    trialEndsAt: { type: Date, default: null },
+    exportDay: { type: String, default: '' },   // YYYY-MM-DD (India time) the count below belongs to
+    exportCount: { type: Number, default: 0 },
+    exportsTotal: { type: Number, default: 0 }
 });
 const User = mongoose.model('User', userSchema);
+
+// ---- jarecut access helpers ----
+const istDay = (d = new Date()) => new Date(d.getTime() + 330 * 60000).toISOString().slice(0, 10);
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const findUserByEmail = (email) => User.findOne({ email: new RegExp('^' + escapeRe(String(email || '').trim()) + '$', 'i') });
+
+function accessOf(user) {
+    const now = Date.now();
+    const pro = user.plan === 'pro';
+    const trialActive = !!(user.trialEndsAt && new Date(user.trialEndsAt).getTime() > now);
+    const used = user.exportDay === istDay() ? (user.exportCount || 0) : 0;
+    const limit = pro ? null : (trialActive ? TRIAL_DAILY_EXPORTS : 0);
+    const remaining = limit === null ? null : Math.max(0, limit - used);
+    const msLeft = trialActive ? new Date(user.trialEndsAt).getTime() - now : 0;
+    let message = '';
+    if (pro) message = 'Pro: unlimited exports.';
+    else if (trialActive) message = remaining > 0 ? `Free trial: ${remaining} of ${limit} exports left today.` : `You used all ${limit} exports for today. More tomorrow.`;
+    else if (user.trialEndsAt) message = 'Your free trial has ended. Ask the admin to extend it or upgrade to Pro.';
+    else message = 'Exports need a free trial or Pro. Ask the admin to start your 5-day trial.';
+    return {
+        plan: pro ? 'pro' : (trialActive ? 'trial' : 'free'),
+        trial: {
+            active: trialActive,
+            startedAt: user.trialStartedAt ? new Date(user.trialStartedAt).getTime() : null,
+            endsAt: user.trialEndsAt ? new Date(user.trialEndsAt).getTime() : null,
+            daysLeft: trialActive ? Math.ceil(msLeft / 86400000) : 0
+        },
+        exports: { used, limit, remaining, total: user.exportsTotal || 0 },
+        canExport: pro || (trialActive && remaining > 0),
+        message
+    };
+}
 
 const payoutSchema = new mongoose.Schema({
     userEmail: String,
@@ -191,6 +240,45 @@ apiRouter.get('/user/rates', requireAuth, async (req, res) => {
     } catch (error) {
         res.status(200).json({ regularRate: 0.30, scriptedRate: 0.50 });
     }
+});
+
+// jarecut: what this user may do right now
+apiRouter.get('/user/access', requireAuth, async (req, res) => {
+    try {
+        const user = await User.findOne({ email: req.userEmail });
+        if (!user) return res.status(404).json({ error: "User not found." });
+        res.status(200).json(accessOf(user));
+    } catch (error) { res.status(500).json({ error: "Database error" }); }
+});
+
+// jarecut: take one export from today's allowance (call before exporting)
+apiRouter.post('/user/export/begin', requireAuth, async (req, res) => {
+    try {
+        const user = await User.findOne({ email: req.userEmail });
+        if (!user) return res.status(404).json({ error: "User not found." });
+        const a = accessOf(user);
+        if (!a.canExport) return res.status(403).json({ error: a.message, access: a });
+        const today = istDay();
+        if (user.exportDay !== today) { user.exportDay = today; user.exportCount = 0; }
+        user.exportCount += 1;
+        user.exportsTotal = (user.exportsTotal || 0) + 1;
+        await user.save();
+        res.status(200).json({ status: "success", access: accessOf(user) });
+    } catch (error) { res.status(500).json({ error: "Database error" }); }
+});
+
+// jarecut: give the export back if it failed or was cancelled
+apiRouter.post('/user/export/cancel', requireAuth, async (req, res) => {
+    try {
+        const user = await User.findOne({ email: req.userEmail });
+        if (!user) return res.status(404).json({ error: "User not found." });
+        if (user.exportDay === istDay() && user.exportCount > 0) {
+            user.exportCount -= 1;
+            user.exportsTotal = Math.max(0, (user.exportsTotal || 1) - 1);
+            await user.save();
+        }
+        res.status(200).json({ status: "success", access: accessOf(user) });
+    } catch (error) { res.status(500).json({ error: "Database error" }); }
 });
 
 apiRouter.post('/user/views', requireAuth, async (req, res) => {
@@ -339,10 +427,11 @@ apiRouter.post('/user/target', requireAuth, async (req, res) => {
 // --- 3. ADMIN API ROUTES ---
 const adminRouter = express.Router();
 
-adminRouter.post('/login', (req, res) => {
-    const { email, password } = req.body;
-    if (email === 'jatin@gmail.com' && password === 'jatin@123') {
-        const token = jwt.sign({ email, role: 'admin' }, JWT_SECRET, { expiresIn: '1d' });
+adminRouter.post('/login', async (req, res) => {
+    const { email, password } = req.body || {};
+    const ok = String(email || '').trim().toLowerCase() === ADMIN_EMAIL && password && await bcrypt.compare(String(password), ADMIN_PASSWORD_HASH);
+    if (ok) {
+        const token = jwt.sign({ email: ADMIN_EMAIL, role: 'admin' }, JWT_SECRET, { expiresIn: '1d' });
         return res.json({ status: 'success', token });
     }
     return res.status(401).json({ error: 'Invalid admin credentials.' });
@@ -420,7 +509,7 @@ adminRouter.post('/payouts/:id/reject', requireAdminAuth, async (req, res) => {
                 await user.save();
             }
             res.json({ status: "success", message: "Payout rejected and refunded." });
-        }
+        } else res.status(400).json({ error: "This payout is not pending." });
     } catch (error) { res.status(500).json({ error: "Database error" }); }
 });
 
@@ -445,6 +534,71 @@ adminRouter.post('/users/:email/rates', requireAdminAuth, async (req, res) => {
     } catch (error) { res.status(500).json({ error: "Database error" }); }
 });
 
+
+// ---- jarecut: free trial + plan control ----
+const userCard = (u) => ({ name: u.name, email: u.email, ...accessOf(u) });
+
+adminRouter.get('/access/:email', requireAdminAuth, async (req, res) => {
+    try {
+        const user = await findUserByEmail(req.params.email);
+        if (!user) return res.status(404).json({ error: "No account with this email. The user must sign up first." });
+        res.json(userCard(user));
+    } catch (error) { res.status(500).json({ error: "Database error" }); }
+});
+
+adminRouter.post('/access/:email/trial/start', requireAdminAuth, async (req, res) => {
+    try {
+        const user = await findUserByEmail(req.params.email);
+        if (!user) return res.status(404).json({ error: "No account with this email. The user must sign up first." });
+        const days = Math.max(1, Math.min(365, parseInt((req.body || {}).days || TRIAL_DAYS, 10) || TRIAL_DAYS));
+        user.trialStartedAt = new Date();
+        user.trialEndsAt = new Date(Date.now() + days * 86400000);
+        await user.save();
+        res.json({ status: "success", message: `${days}-day trial started.`, user: userCard(user) });
+    } catch (error) { res.status(500).json({ error: "Database error" }); }
+});
+
+adminRouter.post('/access/:email/trial/extend', requireAdminAuth, async (req, res) => {
+    try {
+        const user = await findUserByEmail(req.params.email);
+        if (!user) return res.status(404).json({ error: "User not found" });
+        const days = Math.max(1, Math.min(365, parseInt((req.body || {}).days || 1, 10) || 1));
+        const from = Math.max(Date.now(), user.trialEndsAt ? new Date(user.trialEndsAt).getTime() : 0);
+        if (!user.trialStartedAt) user.trialStartedAt = new Date();
+        user.trialEndsAt = new Date(from + days * 86400000);
+        await user.save();
+        res.json({ status: "success", message: `Trial extended by ${days} day(s).`, user: userCard(user) });
+    } catch (error) { res.status(500).json({ error: "Database error" }); }
+});
+
+adminRouter.post('/access/:email/trial/end', requireAdminAuth, async (req, res) => {
+    try {
+        const user = await findUserByEmail(req.params.email);
+        if (!user) return res.status(404).json({ error: "User not found" });
+        if (user.trialEndsAt && new Date(user.trialEndsAt).getTime() > Date.now()) user.trialEndsAt = new Date();
+        await user.save();
+        res.json({ status: "success", message: "Trial ended.", user: userCard(user) });
+    } catch (error) { res.status(500).json({ error: "Database error" }); }
+});
+
+adminRouter.post('/access/:email/plan', requireAdminAuth, async (req, res) => {
+    try {
+        const user = await findUserByEmail(req.params.email);
+        if (!user) return res.status(404).json({ error: "User not found" });
+        const plan = (req.body || {}).plan === 'pro' ? 'pro' : 'free';
+        user.plan = plan;
+        await user.save();
+        res.json({ status: "success", message: plan === 'pro' ? "User is now Pro (unlimited exports)." : "Pro removed.", user: userCard(user) });
+    } catch (error) { res.status(500).json({ error: "Database error" }); }
+});
+
+// everyone with a trial (running or ended) or Pro, newest first
+adminRouter.get('/access', requireAdminAuth, async (req, res) => {
+    try {
+        const users = await User.find({ $or: [{ trialEndsAt: { $ne: null } }, { plan: 'pro' }] }).sort({ trialStartedAt: -1 }).limit(300);
+        res.json(users.map(userCard));
+    } catch (error) { res.status(500).json({ error: "Database error" }); }
+});
 
 // --- 4. MOUNT ROUTERS ---
 // CRITICAL FIX: We must mount the Admin router BEFORE the general /v1 API router.
