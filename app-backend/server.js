@@ -23,7 +23,22 @@ const TRIAL_DAILY_EXPORTS = 5;
 
 // AI hook writer (Groq). Put your key in Vercel → Settings → Environment Variables as GROQ_API_KEY.
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
-const GROQ_MODELS = (process.env.GROQ_MODELS || 'openai/gpt-oss-120b,openai/gpt-oss-20b').split(',').map(s => s.trim()).filter(Boolean);
+const GROQ_MODELS = (process.env.GROQ_MODELS || 'openai/gpt-oss-120b,openai/gpt-oss-20b,qwen/qwen3.8-27b').split(',').map(s => s.trim()).filter(Boolean);
+// Backup AI (Google Gemini, free key from aistudio.google.com/apikey) → Vercel env GEMINI_API_KEY.
+// Used only when every Groq model is busy / out of quota (or Groq has no key).
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const GEMINI_MODELS = (process.env.GEMINI_MODELS || 'gemini-flash-latest,gemini-flash-lite-latest').split(',').map(s => s.trim()).filter(Boolean);
+const csv = v => String(v || '').split(',').map(s => s.trim()).filter(Boolean);
+// every AI we can ask, in order
+const AI_PROVIDERS = [
+    { name: 'Groq', url: 'https://api.groq.com/openai/v1/chat/completions', key: GROQ_API_KEY, models: GROQ_MODELS,
+      extra: m => /^qwen\//.test(m) ? { reasoning_effort: 'none' } : { reasoning_effort: 'low', include_reasoning: false } },
+    { name: 'Gemini', url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', key: GEMINI_API_KEY, models: GEMINI_MODELS,
+      extra: () => ({ reasoning_effort: 'low' }) },
+    // optional 3rd backup: any OpenAI-compatible service (e.g. OpenRouter). Set AI3_URL, AI3_KEY, AI3_MODELS, AI3_NAME.
+    { name: process.env.AI3_NAME || 'Backup', url: process.env.AI3_URL || '', key: process.env.AI3_KEY || '', models: csv(process.env.AI3_MODELS),
+      extra: () => ({}) }
+].filter(p => p.key && p.url && p.models.length);
 // AI hooks per day (India time) for each plan
 const AI_DAILY = { pro: 100, trial: 25, free: 3 };
 
@@ -287,47 +302,53 @@ Rules:
 - No hashtags, no quotes around the text, at most one emoji and only if it really fits.
 Answer ONLY with JSON: {"hooks":[{"text":"...","angle":"curiosity|claim|number|warning|howto|contrarian"}],"best":0}`;
 
-async function groqHooks(transcript, durationSec) {
+async function aiHooks(transcript, durationSec) {
     const user = `Video length: ${Math.round(durationSec || 0)} seconds.\nTranscript:\n"""${transcript}"""`;
     let lastErr = null;
-    for (const model of GROQ_MODELS) {
-        // first with the extra settings for reasoning models, then plain (in case this model rejects them)
-        for (const extra of [{ reasoning_effort: 'low', include_reasoning: false }, {}]) {
+    for (const p of AI_PROVIDERS) for (const model of p.models) {
+        // first with the extra "think less" settings, then plain (in case this model rejects them)
+        for (const extra of [p.extra(model), {}]) {
             try {
-                const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-                    method: 'POST',
-                    headers: { 'Authorization': `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        model, temperature: 0.9, max_completion_tokens: 1200,
-                        response_format: { type: 'json_object' },
-                        messages: [{ role: 'system', content: HOOK_SYSTEM }, { role: 'user', content: user }],
-                        ...extra
-                    })
-                });
+                const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 25000);
+                let r;
+                try {
+                    r = await fetch(p.url, {
+                        method: 'POST', signal: ctl.signal,
+                        headers: { 'Authorization': `Bearer ${p.key}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            model, temperature: 0.9, max_completion_tokens: 1200,
+                            response_format: { type: 'json_object' },
+                            messages: [{ role: 'system', content: HOOK_SYSTEM }, { role: 'user', content: user }],
+                            ...extra
+                        })
+                    });
+                } finally { clearTimeout(tm); }
                 const j = await r.json().catch(() => ({}));
+                const jErr = Array.isArray(j) ? j[0] && j[0].error : j.error;
                 if (!r.ok) {
-                    lastErr = new Error((j.error && j.error.message) || `Groq error ${r.status}`);
+                    lastErr = new Error(`${p.name}: ${(jErr && jErr.message) || `error ${r.status}`}`);
                     if (r.status === 400 && Object.keys(extra).length) continue;   // retry without the extras
-                    break;                                                         // busy / limit: try the next model
+                    break;                                                         // busy / limit / bad model: try the next one
                 }
-                const text = (((j.choices || [])[0] || {}).message || {}).content || '';
+                const text = String((((j.choices || [])[0] || {}).message || {}).content || '').replace(/<think>[\s\S]*?<\/think>/g, '');
                 let parsed = null;
                 try { parsed = JSON.parse(text); } catch (e) { const m = text.match(/\{[\s\S]*\}/); if (m) { try { parsed = JSON.parse(m[0]); } catch (e2) {} } }
                 const hooks = ((parsed && parsed.hooks) || [])
                     .map(h => ({ text: String((h && h.text) || h || '').replace(/^["'“”]+|["'“”]+$/g, '').trim(), angle: String((h && h.angle) || '') }))
                     .filter(h => h.text && h.text.split(/\s+/).length <= 14).slice(0, 5);
-                if (!hooks.length) { lastErr = new Error('The AI returned no usable hooks.'); break; }
+                if (!hooks.length) { lastErr = new Error(`${p.name}: no usable hooks`); break; }
                 let best = parseInt(parsed.best, 10); if (!(best >= 0 && best < hooks.length)) best = 0;
-                return { hooks, best, model };
-            } catch (e) { lastErr = e; break; }
+                return { hooks, best, model, provider: p.name };
+            } catch (e) { lastErr = new Error(`${p.name}: ${e.name === 'AbortError' ? 'timed out' : e.message}`); break; }
         }
     }
-    throw lastErr || new Error('AI is busy. Try again in a minute.');
+    console.error('AI hook failed:', lastErr && lastErr.message);
+    throw new Error('AI is busy right now. Try again in a minute.');
 }
 
 apiRouter.post('/user/ai/hook', requireAuth, async (req, res) => {
     try {
-        if (!GROQ_API_KEY) return res.status(503).json({ error: "AI hooks are not set up on the server yet (GROQ_API_KEY missing)." });
+        if (!AI_PROVIDERS.length) return res.status(503).json({ error: "AI hooks are not set up on the server yet (add GROQ_API_KEY or GEMINI_API_KEY)." });
         const transcript = String((req.body || {}).transcript || '').replace(/\s+/g, ' ').trim().slice(0, 6000);
         if (transcript.split(' ').length < 5) return res.status(400).json({ error: "Not enough speech in this clip to write a hook." });
         const user = await User.findOne({ email: req.userEmail });
@@ -337,7 +358,7 @@ apiRouter.post('/user/ai/hook', requireAuth, async (req, res) => {
         const today = istDay();
         if (user.aiDay !== today) { user.aiDay = today; user.aiCount = 0; }
         if (user.aiCount >= limit) return res.status(429).json({ error: `You used all ${limit} AI hooks for today. More tomorrow.` });
-        const out = await groqHooks(transcript, (req.body || {}).duration);
+        const out = await aiHooks(transcript, (req.body || {}).duration);
         user.aiCount += 1;
         await user.save();
         res.status(200).json({ status: "success", ...out, left: Math.max(0, limit - user.aiCount) });
