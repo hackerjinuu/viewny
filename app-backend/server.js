@@ -302,8 +302,8 @@ Rules:
 - No hashtags, no quotes around the text, at most one emoji and only if it really fits.
 Answer ONLY with JSON: {"hooks":[{"text":"...","angle":"curiosity|claim|number|warning|howto|contrarian"}],"best":0}`;
 
-async function aiHooks(transcript, durationSec) {
-    const user = `Video length: ${Math.round(durationSec || 0)} seconds.\nTranscript:\n"""${transcript}"""`;
+// Ask the AIs in order until one gives a usable answer. pick(parsed) returns the cleaned result or null.
+async function aiAsk(system, user, pick, maxTokens) {
     let lastErr = null;
     for (const p of AI_PROVIDERS) for (const model of p.models) {
         // first with the extra "think less" settings, then plain (in case this model rejects them)
@@ -316,9 +316,9 @@ async function aiHooks(transcript, durationSec) {
                         method: 'POST', signal: ctl.signal,
                         headers: { 'Authorization': `Bearer ${p.key}`, 'Content-Type': 'application/json' },
                         body: JSON.stringify({
-                            model, temperature: 0.9, max_completion_tokens: 1200,
+                            model, temperature: 0.7, max_completion_tokens: maxTokens || 1200,
                             response_format: { type: 'json_object' },
-                            messages: [{ role: 'system', content: HOOK_SYSTEM }, { role: 'user', content: user }],
+                            messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
                             ...extra
                         })
                     });
@@ -333,35 +333,96 @@ async function aiHooks(transcript, durationSec) {
                 const text = String((((j.choices || [])[0] || {}).message || {}).content || '').replace(/<think>[\s\S]*?<\/think>/g, '');
                 let parsed = null;
                 try { parsed = JSON.parse(text); } catch (e) { const m = text.match(/\{[\s\S]*\}/); if (m) { try { parsed = JSON.parse(m[0]); } catch (e2) {} } }
-                const hooks = ((parsed && parsed.hooks) || [])
-                    .map(h => ({ text: String((h && h.text) || h || '').replace(/^["'“”]+|["'“”]+$/g, '').trim(), angle: String((h && h.angle) || '') }))
-                    .filter(h => h.text && h.text.split(/\s+/).length <= 14).slice(0, 5);
-                if (!hooks.length) { lastErr = new Error(`${p.name}: no usable hooks`); break; }
-                let best = parseInt(parsed.best, 10); if (!(best >= 0 && best < hooks.length)) best = 0;
-                return { hooks, best, model, provider: p.name };
+                const out = parsed ? pick(parsed) : null;
+                if (!out) { lastErr = new Error(`${p.name}: unusable answer`); break; }
+                return { ...out, model, provider: p.name };
             } catch (e) { lastErr = new Error(`${p.name}: ${e.name === 'AbortError' ? 'timed out' : e.message}`); break; }
         }
     }
-    console.error('AI hook failed:', lastErr && lastErr.message);
+    console.error('AI failed:', lastErr && lastErr.message);
     throw new Error('AI is busy right now. Try again in a minute.');
 }
+
+async function aiHooks(transcript, durationSec) {
+    const user = `Video length: ${Math.round(durationSec || 0)} seconds.\nTranscript:\n"""${transcript}"""`;
+    return aiAsk(HOOK_SYSTEM, user, parsed => {
+        const hooks = ((parsed && parsed.hooks) || [])
+            .map(h => ({ text: String((h && h.text) || h || '').replace(/^["'“”]+|["'“”]+$/g, '').trim(), angle: String((h && h.angle) || '') }))
+            .filter(h => h.text && h.text.split(/\s+/).length <= 14).slice(0, 5);
+        if (!hooks.length) return null;
+        let best = parseInt(parsed.best, 10); if (!(best >= 0 && best < hooks.length)) best = 0;
+        return { hooks, best };
+    });
+}
+
+// Smart edit: which B-roll fits which line, and the key moments for a punch-in zoom + sound
+const EDIT_SYSTEM = `You are a pro short-form video editor (Reels / Shorts / TikTok).
+You get the clip's transcript as numbered lines "[n @ seconds] words", and a list of B-roll clip names that exist in the user's library.
+Task 1 - B-roll: pick lines where one of the B-roll clips clearly shows what is being said. Match the MEANING, in any language
+(Hindi/Hinglish "paisa" fits "money", "dil" fits "heart", "workout" fits "gym"). Use only clip names from the list, written exactly.
+Do not force weak matches. Skip the first 2 seconds (the speaker's face sells the hook). Leave at least ~3 seconds between B-roll picks.
+Task 2 - Key moments: pick the strongest single words for a punch-in zoom with a sound effect: punchlines, big claims, surprising numbers,
+warnings, strong emotion, the payoff. Roughly one every 6-10 seconds. Never two within 3 seconds.
+For each pick give the line number and the exact word from that line where it should hit.
+Answer ONLY with JSON: {"broll":[{"line":0,"word":"...","clip":"..."}],"moments":[{"line":0,"word":"...","why":"claim|number|warning|emotion|punchline|payoff"}]}`;
+
+async function aiEdit(lines, clips, durationSec) {
+    const L = Math.max(1, Number(durationSec) || 0);
+    const maxBr = Math.max(1, Math.round(L / 4)), maxMo = Math.max(1, Math.round(L / 6));
+    const user = `Clip length: ${Math.round(L)} seconds. Give at most ${maxBr} B-roll picks and at most ${maxMo} key moments.\n` +
+        `B-roll clips available: ${clips.length ? clips.join(', ') : '(none, skip task 1)'}\nTranscript:\n${lines}`;
+    const known = new Map(clips.map(c => [c.toLowerCase(), c]));
+    return aiAsk(EDIT_SYSTEM, user, parsed => {
+        const num = x => { const n = parseInt(x, 10); return n >= 0 ? n : -1; };
+        const broll = ((parsed && parsed.broll) || []).map(b => ({
+            line: num(b && b.line), word: String((b && b.word) || '').trim(),
+            clip: known.get(String((b && b.clip) || '').trim().toLowerCase()) || ''
+        })).filter(b => b.line >= 0 && b.clip).slice(0, maxBr + 2);
+        const moments = ((parsed && parsed.moments) || []).map(m => ({
+            line: num(m && m.line), word: String((m && m.word) || '').trim(), why: String((m && m.why) || '')
+        })).filter(m => m.line >= 0).slice(0, maxMo + 2);
+        if (!broll.length && !moments.length) return null;
+        return { broll, moments };
+    }, 2000);
+}
+
+// checks this user's AI allowance for today; returns { user, limit } or sends the error
+async function aiQuota(req, res) {
+    const user = await User.findOne({ email: req.userEmail });
+    if (!user) { res.status(404).json({ error: "User not found." }); return null; }
+    const plan = accessOf(user).plan;
+    const limit = AI_DAILY[plan] || AI_DAILY.free;
+    const today = istDay();
+    if (user.aiDay !== today) { user.aiDay = today; user.aiCount = 0; }
+    if (user.aiCount >= limit) { res.status(429).json({ error: `You used all ${limit} AI actions for today. More tomorrow.` }); return null; }
+    return { user, limit };
+}
+
+apiRouter.post('/user/ai/edit', requireAuth, async (req, res) => {
+    try {
+        if (!AI_PROVIDERS.length) return res.status(503).json({ error: "AI is not set up on the server yet (add GROQ_API_KEY or GEMINI_API_KEY)." });
+        const b = req.body || {};
+        const lines = String(b.lines || '').slice(0, 9000);
+        if (lines.split(/\s+/).length < 8) return res.status(400).json({ error: "Not enough speech in this clip for the AI to work with." });
+        const clips = (Array.isArray(b.clips) ? b.clips : []).map(c => String(c).trim().slice(0, 60)).filter(Boolean).slice(0, 300);
+        const q = await aiQuota(req, res); if (!q) return;
+        const out = await aiEdit(lines, clips, b.duration);
+        q.user.aiCount += 1;
+        await q.user.save();
+        res.status(200).json({ status: "success", ...out, left: Math.max(0, q.limit - q.user.aiCount) });
+    } catch (error) { res.status(502).json({ error: error.message || "AI error" }); }
+});
 
 apiRouter.post('/user/ai/hook', requireAuth, async (req, res) => {
     try {
         if (!AI_PROVIDERS.length) return res.status(503).json({ error: "AI hooks are not set up on the server yet (add GROQ_API_KEY or GEMINI_API_KEY)." });
         const transcript = String((req.body || {}).transcript || '').replace(/\s+/g, ' ').trim().slice(0, 6000);
         if (transcript.split(' ').length < 5) return res.status(400).json({ error: "Not enough speech in this clip to write a hook." });
-        const user = await User.findOne({ email: req.userEmail });
-        if (!user) return res.status(404).json({ error: "User not found." });
-        const plan = accessOf(user).plan;
-        const limit = AI_DAILY[plan] || AI_DAILY.free;
-        const today = istDay();
-        if (user.aiDay !== today) { user.aiDay = today; user.aiCount = 0; }
-        if (user.aiCount >= limit) return res.status(429).json({ error: `You used all ${limit} AI hooks for today. More tomorrow.` });
+        const q = await aiQuota(req, res); if (!q) return;
         const out = await aiHooks(transcript, (req.body || {}).duration);
-        user.aiCount += 1;
-        await user.save();
-        res.status(200).json({ status: "success", ...out, left: Math.max(0, limit - user.aiCount) });
+        q.user.aiCount += 1;
+        await q.user.save();
+        res.status(200).json({ status: "success", ...out, left: Math.max(0, q.limit - q.user.aiCount) });
     } catch (error) { res.status(502).json({ error: error.message || "AI error" }); }
 });
 
