@@ -29,11 +29,12 @@ const ADS_TEST = /^(1|true|yes)$/i.test(process.env.ADS_TEST || process.env.STAR
 // Second network: Unity Ads (Game ID from the Unity dashboard; placement defaults to Rewarded_Android)
 const UNITY_GAME_ID = (process.env.UNITY_GAME_ID || '').trim();
 const UNITY_PLACEMENT = (process.env.UNITY_PLACEMENT || 'Rewarded_Android').trim();
+const UNITY_INTERSTITIAL = (process.env.UNITY_INTERSTITIAL || 'Interstitial_Android').trim();
 // Order to try them in, e.g. "startio,unity" or "unity,startio"
 const ADS_ORDER = (process.env.ADS_ORDER || 'startio,unity').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
 function adNets() {
     const all = { startio: STARTIO_APP_ID ? { net: 'startio', id: STARTIO_APP_ID, extra: '' } : null,
-                  unity: UNITY_GAME_ID ? { net: 'unity', id: UNITY_GAME_ID, extra: UNITY_PLACEMENT } : null };
+                  unity: UNITY_GAME_ID ? { net: 'unity', id: UNITY_GAME_ID, extra: `${UNITY_PLACEMENT}|${UNITY_INTERSTITIAL}` } : null };
     const order = [...ADS_ORDER, ...Object.keys(all).filter(k => !ADS_ORDER.includes(k))];
     return order.map(k => all[k]).filter(Boolean);
 }
