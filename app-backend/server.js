@@ -24,6 +24,19 @@ const TRIAL_DAILY_EXPORTS = 5;
 // ADS_FOR: 'all' (default: every user, Pro too), 'nonpro' (trial + free only) or 'off'.
 const STARTIO_APP_ID = (process.env.STARTIO_APP_ID || '').trim();
 const ADS_FOR = (process.env.ADS_FOR || 'all').trim().toLowerCase();
+// ADS_TEST=true (or STARTIO_TEST=true) shows demo ads from every network, to check the setup. Remove it to earn real money.
+const ADS_TEST = /^(1|true|yes)$/i.test(process.env.ADS_TEST || process.env.STARTIO_TEST || '');
+// Second network: Unity Ads (Game ID from the Unity dashboard; placement defaults to Rewarded_Android)
+const UNITY_GAME_ID = (process.env.UNITY_GAME_ID || '').trim();
+const UNITY_PLACEMENT = (process.env.UNITY_PLACEMENT || 'Rewarded_Android').trim();
+// Order to try them in, e.g. "startio,unity" or "unity,startio"
+const ADS_ORDER = (process.env.ADS_ORDER || 'startio,unity').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
+function adNets() {
+    const all = { startio: STARTIO_APP_ID ? { net: 'startio', id: STARTIO_APP_ID, extra: '' } : null,
+                  unity: UNITY_GAME_ID ? { net: 'unity', id: UNITY_GAME_ID, extra: UNITY_PLACEMENT } : null };
+    const order = [...ADS_ORDER, ...Object.keys(all).filter(k => !ADS_ORDER.includes(k))];
+    return order.map(k => all[k]).filter(Boolean);
+}
 
 // AI hook writer (Groq). Put your key in Vercel → Settings → Environment Variables as GROQ_API_KEY.
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
@@ -124,7 +137,7 @@ function accessOf(user) {
         exports: { used, limit, remaining, total: user.exportsTotal || 0 },
         canExport: pro || (trialActive && remaining > 0),
         message,
-        ads: { show: !!STARTIO_APP_ID && ADS_FOR !== 'off' && (ADS_FOR === 'all' || !pro), appId: STARTIO_APP_ID }
+        ads: { show: adNets().length > 0 && ADS_FOR !== 'off' && (ADS_FOR === 'all' || !pro), appId: STARTIO_APP_ID, test: ADS_TEST, nets: adNets() }
     };
 }
 
