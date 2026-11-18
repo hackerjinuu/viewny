@@ -21,9 +21,9 @@ const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || '$2a$12$2YogCT/R/
 const TRIAL_DAYS = 5;
 const TRIAL_DAILY_EXPORTS = 5;
 // Ads before exports (Start.io, works for apps outside the stores). Set STARTIO_APP_ID in Vercel to turn them on.
-// ADS_FOR: 'nonpro' (default: trial + free users), 'all' (Pro too) or 'off'.
+// ADS_FOR: 'all' (default: every user, Pro too), 'nonpro' (trial + free only) or 'off'.
 const STARTIO_APP_ID = (process.env.STARTIO_APP_ID || '').trim();
-const ADS_FOR = (process.env.ADS_FOR || 'nonpro').trim().toLowerCase();
+const ADS_FOR = (process.env.ADS_FOR || 'all').trim().toLowerCase();
 
 // AI hook writer (Groq). Put your key in Vercel → Settings → Environment Variables as GROQ_API_KEY.
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
